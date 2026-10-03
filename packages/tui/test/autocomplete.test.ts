@@ -2,7 +2,7 @@ import assert from "node:assert";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, parse } from "node:path";
 import { afterEach, beforeEach, describe, it, test } from "node:test";
 import { CombinedAutocompleteProvider } from "../src/autocomplete.ts";
 
@@ -350,6 +350,17 @@ describe("CombinedAutocompleteProvider", () => {
 			assert.ok(values?.includes("@../outside/nested/alpha.ts"));
 			assert.ok(values?.includes("@../outside/nested/deeper/also-alpha.ts"));
 			assert.ok(!values?.includes("@../outside/nested/deeper/zzz.ts"));
+		});
+
+		test("scopes fuzzy search to absolute Windows drive paths", { skip: process.platform !== "win32" }, async () => {
+			setupFolder(baseDir, { dirs: ["child"] });
+			const provider = new CombinedAutocompleteProvider([], baseDir, requireFdPath());
+			const displayBaseDir = baseDir.replaceAll("\\", "/");
+			const line = `@${displayBaseDir}/ch`;
+			const result = await getSuggestions(provider, [line], 0, line.length);
+			assert.ok(result, line);
+			assert.strictEqual(result.prefix, line);
+			assert.ok(result.items.some((item) => item.value === `@${displayBaseDir}/child/`));
 		});
 
 		test("ranks shallower same-score @ matches before deeper matches", async () => {
@@ -743,6 +754,35 @@ describe("CombinedAutocompleteProvider", () => {
 			const values = result?.items.map((item) => item.value);
 			assert.ok(values?.includes("./src/"), `Expected ./src/ in ${JSON.stringify(values)}`);
 		});
+
+		test(
+			"completes absolute Windows drive paths with slash separators",
+			{ skip: process.platform !== "win32" },
+			async () => {
+				setupFolder(baseDir, { dirs: ["child"] });
+				const provider = new CombinedAutocompleteProvider([], baseDir);
+				const driveRoot = parse(baseDir).root;
+
+				for (const prefix of [driveRoot, driveRoot.replaceAll("\\", "/")]) {
+					const line = `/add-dir ${prefix}`;
+					const result = await getSuggestions(provider, [line], 0, line.length, true);
+					assert.ok(result, line);
+					assert.strictEqual(result.prefix, prefix);
+				}
+
+				const displayBaseDir = baseDir.replaceAll("\\", "/");
+				for (const separator of ["\\", "/"]) {
+					const prefix = `${baseDir}${separator}`;
+					const line = `/add-dir ${prefix}`;
+					const result = await getSuggestions(provider, [line], 0, line.length, true);
+					assert.ok(result, line);
+					const child = result.items.find((item) => item.value === `${displayBaseDir}/child/`);
+					assert.ok(child, line);
+					const applied = provider.applyCompletion([line], 0, line.length, child, result.prefix);
+					assert.strictEqual(applied.lines[0], `/add-dir ${displayBaseDir}/child/`);
+				}
+			},
+		);
 	});
 
 	describe("quoted path completion", () => {
